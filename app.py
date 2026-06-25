@@ -22,17 +22,6 @@ st.set_page_config(page_title="Receipt Scanner with AI", layout="wide")
 MAX_SCANS_PER_DAY = 999999
 MAX_FILES_PER_SUBMISSION = 50
 
-# ---------- Helper: format numbers with commas and $ ----------
-def format_number(value, as_currency=False):
-    if value is None:
-        return "N/A"
-    if isinstance(value, (int, float)):
-        if as_currency:
-            return f"${value:,.2f}" if isinstance(value, float) else f"${value:,}"
-        else:
-            return f"{value:,.2f}" if isinstance(value, float) else f"{value:,}"
-    return str(value)
-
 # ---------- Database helper functions ----------
 DB_PATH = "receipt_scanner.db"
 
@@ -322,16 +311,15 @@ def generate_detailed_csv(entry):
     lines.append("")
     lines.append("Item,Price")
     for item in entry.get("items", []):
-        price = item.get("price")
-        lines.append(f"{item.get('name', '')},{format_number(price, as_currency=False)}")
+        lines.append(f"{item.get('name', '')},{item.get('price', '')}")
     lines.append("")
-    lines.append(f"Subtotal,{format_number(entry.get('subtotal'), as_currency=False)}")
-    lines.append(f"Tax,{format_number(entry.get('tax'), as_currency=False)}")
+    lines.append(f"Subtotal,{entry.get('subtotal', '')}")
+    lines.append(f"Tax,{entry.get('tax', '')}")
     if entry.get("tip") is not None:
-        lines.append(f"Tip,{format_number(entry['tip'], as_currency=False)}")
+        lines.append(f"Tip,{entry['tip']}")
         if entry.get("tip_percentage") is not None:
-            lines.append(f"Tip Percentage,{format_number(entry['tip_percentage'], as_currency=False)}")
-    lines.append(f"Total (final),{format_number(entry.get('total'), as_currency=False)}")
+            lines.append(f"Tip Percentage,{entry['tip_percentage']}")
+    lines.append(f"Total (final),{entry.get('total', '')}")
     return "\n".join(lines)
 
 # ---------- Main ----------
@@ -359,19 +347,9 @@ def main():
         st.session_state.show_history = False
     if "expanded_rows" not in st.session_state:
         st.session_state.expanded_rows = {}
-    if "debug_messages" not in st.session_state:
-        st.session_state.debug_messages = []
 
     init_db()
     migrate_db()
-
-    # --- Force admin account ---
-    conn = get_db_connection()
-    c = conn.cursor()
-    admin_hash = hashlib.sha256("pa$$4Admin".encode()).hexdigest()
-    c.execute("INSERT OR REPLACE INTO users (id, username, password_hash) VALUES (1, 'admin', ?)", (admin_hash,))
-    conn.commit()
-    conn.close()
 
     # ---------- Login ----------
     if not st.session_state.authenticated:
@@ -420,12 +398,6 @@ def main():
         key=f"uploader_{st.session_state.uploader_key}"
     )
 
-    if uploaded_files:
-        st.info(f"📎 **{len(uploaded_files)}** file(s) selected.")
-    else:
-        st.info("📎 No files selected yet.")
-
-    # ---------- Process button ----------
     limit_exceeded = uploaded_files and len(uploaded_files) > MAX_FILES_PER_SUBMISSION
     if limit_exceeded:
         st.error(f"⚠️ You can upload a maximum of **{MAX_FILES_PER_SUBMISSION}** files. You selected **{len(uploaded_files)}**.")
@@ -439,85 +411,66 @@ def main():
             process_clicked = st.button("🚀 Process All", type="primary",
                                         disabled=(not uploaded_files))
 
-    # ---------- Processing with debug ----------
+    # ---------- Process files ----------
     if process_clicked and uploaded_files:
         if today_scans >= MAX_SCANS_PER_DAY:
             st.error(f"Daily scan limit ({MAX_SCANS_PER_DAY}) reached.")
         else:
-            # Clear previous debug messages
-            st.session_state.debug_messages = []
             progress_bar = st.progress(0)
             status_text = st.empty()
-            error_container = st.empty()
             errors = []
             new_results = []
-            total_files = len(uploaded_files)
-
-            status_text.text(f"⏳ Processing **{total_files}** files...")
 
             for idx, file in enumerate(uploaded_files):
+                status_text.text(f"Processing {file.name}... ({idx+1}/{len(uploaded_files)})")
                 try:
-                    status_text.text(f"⏳ Processing **{file.name}**... ({idx+1}/{total_files})")
                     result = process_single_file(file, st.session_state.user_id)
                     scan_id = save_scan(st.session_state.user_id, result)
                     result["db_id"] = scan_id
                     new_results.append(result)
                     increment_scan_count(st.session_state.user_id)
-                    st.session_state.debug_messages.append(f"✅ {file.name} – success")
                 except Exception as e:
-                    error_msg = f"❌ {file.name}: {str(e)}"
-                    errors.append(error_msg)
-                    st.session_state.debug_messages.append(error_msg)
-                progress_bar.progress((idx + 1) / total_files)
+                    errors.append(f"{file.name}: {str(e)}")
+                progress_bar.progress((idx + 1) / len(uploaded_files))
 
             status_text.text("✅ All files processed!")
-
-            # Display errors if any
             if errors:
-                with error_container.container():
-                    st.warning("Some files had errors:")
-                    for err in errors:
-                        st.write(f"- {err}")
+                st.warning("Some files had errors:")
+                for err in errors:
+                    st.write(f"- {err}")
 
-            # Show summary
             if new_results:
-                st.success(f"✅ **{len(new_results)}** out of **{total_files}** receipt(s) successfully scanned and saved.")
                 st.session_state.history.extend(new_results)
-            else:
-                st.error(f"⚠️ **0** receipts were processed. Check the errors above.")
-
-            # Show debug messages in an expander
-            if st.session_state.debug_messages:
-                with st.expander("🔍 Debug log"):
-                    for msg in st.session_state.debug_messages:
-                        st.write(msg)
+                st.success(f"✅ {len(new_results)} receipt(s) successfully scanned and saved.")
 
             st.session_state.show_history = True
             st.rerun()
 
-    # ---------- Display history ----------
+    # ---------- Display history with DataFrame (sticky header) ----------
     if st.session_state.show_history and st.session_state.history:
         st.divider()
         st.subheader("📋 Scan History (Current Session)")
         st.caption("Click the '👁️' button to preview a receipt, or '🗑️' to delete. Click the table headers to sort.")
 
+        # Build summary DataFrame
         summary_data = []
         for entry in st.session_state.history:
-            tip_display = format_number(entry.get("tip"), as_currency=True)
+            tip_display = f"${entry['tip']:.2f}" if entry.get("tip") is not None else "N/A"
             if entry.get("tip_percentage") is not None:
                 tip_display += f" ({entry['tip_percentage']:.0f}%)"
             summary_data.append({
                 "File": entry["filename"][:40] + "..." if len(entry["filename"]) > 40 else entry["filename"],
                 "Items": len(entry.get("items") or []),
-                "Subtotal": format_number(entry.get("subtotal"), as_currency=True),
-                "Tax": format_number(entry.get("tax"), as_currency=True),
+                "Subtotal": f"${entry['subtotal']:.2f}" if entry.get("subtotal") else "N/A",
+                "Tax": f"${entry['tax']:.2f}" if entry.get("tax") else "N/A",
                 "Tip": tip_display,
                 "Tip %": f"{entry['tip_percentage']:.1f}%" if entry.get("tip_percentage") is not None else "N/A",
-                "Total": format_number(entry.get("total"), as_currency=True),
+                "Total": f"${entry['total']:.2f}" if entry.get("total") else "N/A",
                 "Timestamp": entry["timestamp"]
             })
         summary_df = pd.DataFrame(summary_data)
 
+        # Custom CSS for sticky header, background, font
         st.markdown("""
         <style>
         div[data-testid="stDataFrame"] th {
@@ -535,10 +488,12 @@ def main():
 
         st.dataframe(summary_df, use_container_width=True)
 
+        # Preview and delete buttons (below table)
         st.markdown("---")
         st.subheader("📄 Receipt Details")
         st.caption("Select a receipt below to preview and edit.")
 
+        # For each entry, create a button to expand the details
         for idx, entry in enumerate(st.session_state.history):
             col1, col2, col3 = st.columns([4, 1, 1])
             with col1:
@@ -556,18 +511,19 @@ def main():
                         del st.session_state.expanded_rows[idx]
                     st.rerun()
 
+            # Expander for details (toggled by preview button)
             with st.expander(f"📄 {entry['filename']} – {entry['timestamp']}", expanded=st.session_state.expanded_rows.get(idx, False)):
                 cols_met = st.columns(5)
-                cols_met[0].metric("Subtotal", format_number(entry.get("subtotal"), as_currency=True))
-                cols_met[1].metric("Tax", format_number(entry.get("tax"), as_currency=True))
+                cols_met[0].metric("Subtotal", f"${entry['subtotal']:.2f}" if entry.get("subtotal") else "N/A")
+                cols_met[1].metric("Tax", f"${entry['tax']:.2f}" if entry.get("tax") else "N/A")
                 if entry.get("tip") is not None:
-                    tip_label = format_number(entry.get("tip"), as_currency=True)
+                    tip_label = f"${entry['tip']:.2f}"
                     if entry.get("tip_percentage") is not None:
                         tip_label += f" ({entry['tip_percentage']:.0f}%)"
                     cols_met[2].metric("💵 Tip", tip_label)
                 else:
                     cols_met[2].metric("💵 Tip", "None")
-                cols_met[3].metric("Total (final)", format_number(entry.get("total"), as_currency=True))
+                cols_met[3].metric("Total (final)", f"${entry['total']:.2f}" if entry.get("total") else "N/A")
 
                 if "image_bytes" in entry and entry["image_bytes"]:
                     default_width = st.session_state.img_width.get(idx, 900)
@@ -653,16 +609,17 @@ def main():
 
         # Summary CSV download
         if st.session_state.history:
+            # Rebuild summary data for CSV
             summary_data_csv = []
             for entry in st.session_state.history:
                 summary_data_csv.append({
                     "File": entry["filename"],
                     "Items": len(entry.get("items") or []),
-                    "Subtotal": format_number(entry.get("subtotal"), as_currency=False),
-                    "Tax": format_number(entry.get("tax"), as_currency=False),
-                    "Tip": format_number(entry.get("tip"), as_currency=False),
-                    "Tip %": format_number(entry.get("tip_percentage"), as_currency=False),
-                    "Total": format_number(entry.get("total"), as_currency=False),
+                    "Subtotal": entry.get("subtotal", "N/A"),
+                    "Tax": entry.get("tax", "N/A"),
+                    "Tip": entry.get("tip", "N/A"),
+                    "Tip %": entry.get("tip_percentage", "N/A"),
+                    "Total": entry.get("total", "N/A"),
                     "Timestamp": entry["timestamp"]
                 })
             csv_summary = pd.DataFrame(summary_data_csv).to_csv(index=False).encode('utf-8')
