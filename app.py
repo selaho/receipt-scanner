@@ -25,6 +25,19 @@ MAX_FILES_PER_SUBMISSION = 50
 # ---------- Database helper functions ----------
 DB_PATH = "receipt_scanner.db"
 
+def format_number(value):
+    """Return a formatted string with thousands separators for numbers."""
+    if value is None:
+        return ""
+    if isinstance(value, (int, float)):
+        # Use comma as thousands separator, always 2 decimals for floats
+        if isinstance(value, float):
+            return f"{value:,.2f}"
+        else:
+            return f"{value:,}"
+    return str(value)
+
+
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -311,15 +324,16 @@ def generate_detailed_csv(entry):
     lines.append("")
     lines.append("Item,Price")
     for item in entry.get("items", []):
-        lines.append(f"{item.get('name', '')},{item.get('price', '')}")
+        price = item.get("price")
+        lines.append(f"{item.get('name', '')},{format_number(price)}")
     lines.append("")
-    lines.append(f"Subtotal,{entry.get('subtotal', '')}")
-    lines.append(f"Tax,{entry.get('tax', '')}")
+    lines.append(f"Subtotal,{format_number(entry.get('subtotal'))}")
+    lines.append(f"Tax,{format_number(entry.get('tax'))}")
     if entry.get("tip") is not None:
-        lines.append(f"Tip,{entry['tip']}")
+        lines.append(f"Tip,{format_number(entry['tip'])}")
         if entry.get("tip_percentage") is not None:
-            lines.append(f"Tip Percentage,{entry['tip_percentage']}")
-    lines.append(f"Total (final),{entry.get('total', '')}")
+            lines.append(f"Tip Percentage,{format_number(entry['tip_percentage'])}")
+    lines.append(f"Total (final),{format_number(entry.get('total'))}")
     return "\n".join(lines)
 
 # ---------- Main ----------
@@ -607,19 +621,18 @@ def main():
                     with st.expander("Show raw JSON"):
                         st.json(entry["raw_json"])
 
-        # Summary CSV download
+        # Summary CSV download (with formatted numbers)
         if st.session_state.history:
-            # Rebuild summary data for CSV
             summary_data_csv = []
             for entry in st.session_state.history:
                 summary_data_csv.append({
                     "File": entry["filename"],
                     "Items": len(entry.get("items") or []),
-                    "Subtotal": entry.get("subtotal", "N/A"),
-                    "Tax": entry.get("tax", "N/A"),
-                    "Tip": entry.get("tip", "N/A"),
-                    "Tip %": entry.get("tip_percentage", "N/A"),
-                    "Total": entry.get("total", "N/A"),
+                    "Subtotal": format_number(entry.get("subtotal")),
+                    "Tax": format_number(entry.get("tax")),
+                    "Tip": format_number(entry.get("tip")),
+                    "Tip %": format_number(entry.get("tip_percentage")),
+                    "Total": format_number(entry.get("total")),
                     "Timestamp": entry["timestamp"]
                 })
             csv_summary = pd.DataFrame(summary_data_csv).to_csv(index=False).encode('utf-8')
