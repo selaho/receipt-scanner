@@ -20,14 +20,10 @@ st.set_page_config(page_title="Receipt Scanner with AI", layout="wide")
 
 # ---------- Configuration constants ----------
 MAX_SCANS_PER_DAY = 999999
-MAX_FILES_PER_SUBMISSION = 50   # changed to 50
+MAX_FILES_PER_SUBMISSION = 50
 
 # ---------- Helper: format numbers with commas and $ ----------
 def format_number(value, as_currency=False):
-    """
-    Format a number with thousands separators and optional $.
-    Returns a string.
-    """
     if value is None:
         return "N/A"
     if isinstance(value, (int, float)):
@@ -320,7 +316,6 @@ def process_single_file(uploaded_file, user_id):
     return result
 
 def generate_detailed_csv(entry):
-    """CSV with formatted numbers (commas)"""
     lines = []
     lines.append(f"Filename,{entry['filename']}")
     lines.append(f"Timestamp,{entry['timestamp']}")
@@ -423,6 +418,12 @@ def main():
         key=f"uploader_{st.session_state.uploader_key}"
     )
 
+    # Display how many files are selected
+    if uploaded_files:
+        st.info(f"📎 **{len(uploaded_files)}** file(s) selected.")
+    else:
+        st.info("📎 No files selected yet.")
+
     limit_exceeded = uploaded_files and len(uploaded_files) > MAX_FILES_PER_SUBMISSION
     if limit_exceeded:
         st.error(f"⚠️ You can upload a maximum of **{MAX_FILES_PER_SUBMISSION}** files. You selected **{len(uploaded_files)}**.")
@@ -446,8 +447,11 @@ def main():
             errors = []
             new_results = []
 
+            total_files = len(uploaded_files)
+            status_text.text(f"Processing **{total_files}** files...")
+
             for idx, file in enumerate(uploaded_files):
-                status_text.text(f"Processing {file.name}... ({idx+1}/{len(uploaded_files)})")
+                status_text.text(f"Processing {file.name}... ({idx+1}/{total_files})")
                 try:
                     result = process_single_file(file, st.session_state.user_id)
                     scan_id = save_scan(st.session_state.user_id, result)
@@ -456,7 +460,7 @@ def main():
                     increment_scan_count(st.session_state.user_id)
                 except Exception as e:
                     errors.append(f"{file.name}: {str(e)}")
-                progress_bar.progress((idx + 1) / len(uploaded_files))
+                progress_bar.progress((idx + 1) / total_files)
 
             status_text.text("✅ All files processed!")
             if errors:
@@ -464,9 +468,12 @@ def main():
                 for err in errors:
                     st.write(f"- {err}")
 
+            # Debug info: show how many were processed
             if new_results:
+                st.success(f"✅ **{len(new_results)}** out of **{total_files}** receipt(s) successfully scanned and saved.")
                 st.session_state.history.extend(new_results)
-                st.success(f"✅ {len(new_results)} receipt(s) successfully scanned and saved.")
+            else:
+                st.error(f"⚠️ **0** receipts were processed. Check the errors above.")
 
             st.session_state.show_history = True
             st.rerun()
