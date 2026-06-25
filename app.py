@@ -359,6 +359,8 @@ def main():
         st.session_state.show_history = False
     if "expanded_rows" not in st.session_state:
         st.session_state.expanded_rows = {}
+    if "debug_messages" not in st.session_state:
+        st.session_state.debug_messages = []
 
     init_db()
     migrate_db()
@@ -418,12 +420,12 @@ def main():
         key=f"uploader_{st.session_state.uploader_key}"
     )
 
-    # Display how many files are selected
     if uploaded_files:
         st.info(f"📎 **{len(uploaded_files)}** file(s) selected.")
     else:
         st.info("📎 No files selected yet.")
 
+    # ---------- Process button ----------
     limit_exceeded = uploaded_files and len(uploaded_files) > MAX_FILES_PER_SUBMISSION
     if limit_exceeded:
         st.error(f"⚠️ You can upload a maximum of **{MAX_FILES_PER_SUBMISSION}** files. You selected **{len(uploaded_files)}**.")
@@ -437,54 +439,68 @@ def main():
             process_clicked = st.button("🚀 Process All", type="primary",
                                         disabled=(not uploaded_files))
 
-    # ---------- Process files ----------
+    # ---------- Processing with debug ----------
     if process_clicked and uploaded_files:
         if today_scans >= MAX_SCANS_PER_DAY:
             st.error(f"Daily scan limit ({MAX_SCANS_PER_DAY}) reached.")
         else:
+            # Clear previous debug messages
+            st.session_state.debug_messages = []
             progress_bar = st.progress(0)
             status_text = st.empty()
+            error_container = st.empty()
             errors = []
             new_results = []
-
             total_files = len(uploaded_files)
-            status_text.text(f"Processing **{total_files}** files...")
+
+            status_text.text(f"⏳ Processing **{total_files}** files...")
 
             for idx, file in enumerate(uploaded_files):
-                status_text.text(f"Processing {file.name}... ({idx+1}/{total_files})")
                 try:
+                    status_text.text(f"⏳ Processing **{file.name}**... ({idx+1}/{total_files})")
                     result = process_single_file(file, st.session_state.user_id)
                     scan_id = save_scan(st.session_state.user_id, result)
                     result["db_id"] = scan_id
                     new_results.append(result)
                     increment_scan_count(st.session_state.user_id)
+                    st.session_state.debug_messages.append(f"✅ {file.name} – success")
                 except Exception as e:
-                    errors.append(f"{file.name}: {str(e)}")
+                    error_msg = f"❌ {file.name}: {str(e)}"
+                    errors.append(error_msg)
+                    st.session_state.debug_messages.append(error_msg)
                 progress_bar.progress((idx + 1) / total_files)
 
             status_text.text("✅ All files processed!")
-            if errors:
-                st.warning("Some files had errors:")
-                for err in errors:
-                    st.write(f"- {err}")
 
-            # Debug info: show how many were processed
+            # Display errors if any
+            if errors:
+                with error_container.container():
+                    st.warning("Some files had errors:")
+                    for err in errors:
+                        st.write(f"- {err}")
+
+            # Show summary
             if new_results:
                 st.success(f"✅ **{len(new_results)}** out of **{total_files}** receipt(s) successfully scanned and saved.")
                 st.session_state.history.extend(new_results)
             else:
                 st.error(f"⚠️ **0** receipts were processed. Check the errors above.")
 
+            # Show debug messages in an expander
+            if st.session_state.debug_messages:
+                with st.expander("🔍 Debug log"):
+                    for msg in st.session_state.debug_messages:
+                        st.write(msg)
+
             st.session_state.show_history = True
             st.rerun()
 
-    # ---------- Display history with formatted numbers ----------
+    # ---------- Display history ----------
     if st.session_state.show_history and st.session_state.history:
         st.divider()
         st.subheader("📋 Scan History (Current Session)")
         st.caption("Click the '👁️' button to preview a receipt, or '🗑️' to delete. Click the table headers to sort.")
 
-        # Build summary DataFrame with formatted numbers (as strings for display)
         summary_data = []
         for entry in st.session_state.history:
             tip_display = format_number(entry.get("tip"), as_currency=True)
@@ -502,7 +518,6 @@ def main():
             })
         summary_df = pd.DataFrame(summary_data)
 
-        # Custom CSS for sticky header, background, font
         st.markdown("""
         <style>
         div[data-testid="stDataFrame"] th {
@@ -520,7 +535,6 @@ def main():
 
         st.dataframe(summary_df, use_container_width=True)
 
-        # Preview and delete buttons (below table)
         st.markdown("---")
         st.subheader("📄 Receipt Details")
         st.caption("Select a receipt below to preview and edit.")
@@ -542,7 +556,6 @@ def main():
                         del st.session_state.expanded_rows[idx]
                     st.rerun()
 
-            # Expander for details – with formatted metrics
             with st.expander(f"📄 {entry['filename']} – {entry['timestamp']}", expanded=st.session_state.expanded_rows.get(idx, False)):
                 cols_met = st.columns(5)
                 cols_met[0].metric("Subtotal", format_number(entry.get("subtotal"), as_currency=True))
@@ -638,7 +651,7 @@ def main():
                     with st.expander("Show raw JSON"):
                         st.json(entry["raw_json"])
 
-        # Summary CSV download (with formatted numbers)
+        # Summary CSV download
         if st.session_state.history:
             summary_data_csv = []
             for entry in st.session_state.history:
