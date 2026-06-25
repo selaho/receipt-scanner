@@ -20,7 +20,7 @@ st.set_page_config(page_title="Receipt Scanner with AI", layout="wide")
 
 # ---------- Configuration constants ----------
 MAX_SCANS_PER_DAY = 999999
-MAX_FILES_PER_SUBMISSION = 30
+MAX_FILES_PER_SUBMISSION = 50
 
 # ---------- Database helper functions ----------
 DB_PATH = "receipt_scanner.db"
