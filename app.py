@@ -20,23 +20,25 @@ st.set_page_config(page_title="Receipt Scanner with AI", layout="wide")
 
 # ---------- Configuration constants ----------
 MAX_SCANS_PER_DAY = 999999
-MAX_FILES_PER_SUBMISSION = 50
+MAX_FILES_PER_SUBMISSION = 50   # changed to 50
+
+# ---------- Helper: format numbers with commas and $ ----------
+def format_number(value, as_currency=False):
+    """
+    Format a number with thousands separators and optional $.
+    Returns a string.
+    """
+    if value is None:
+        return "N/A"
+    if isinstance(value, (int, float)):
+        if as_currency:
+            return f"${value:,.2f}" if isinstance(value, float) else f"${value:,}"
+        else:
+            return f"{value:,.2f}" if isinstance(value, float) else f"{value:,}"
+    return str(value)
 
 # ---------- Database helper functions ----------
 DB_PATH = "receipt_scanner.db"
-
-def format_number(value):
-    """Return a formatted string with thousands separators for numbers."""
-    if value is None:
-        return ""
-    if isinstance(value, (int, float)):
-        # Use comma as thousands separator, always 2 decimals for floats
-        if isinstance(value, float):
-            return f"{value:,.2f}"
-        else:
-            return f"{value:,}"
-    return str(value)
-
 
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH)
@@ -318,6 +320,7 @@ def process_single_file(uploaded_file, user_id):
     return result
 
 def generate_detailed_csv(entry):
+    """CSV with formatted numbers (commas)"""
     lines = []
     lines.append(f"Filename,{entry['filename']}")
     lines.append(f"Timestamp,{entry['timestamp']}")
@@ -325,15 +328,15 @@ def generate_detailed_csv(entry):
     lines.append("Item,Price")
     for item in entry.get("items", []):
         price = item.get("price")
-        lines.append(f"{item.get('name', '')},{format_number(price)}")
+        lines.append(f"{item.get('name', '')},{format_number(price, as_currency=False)}")
     lines.append("")
-    lines.append(f"Subtotal,{format_number(entry.get('subtotal'))}")
-    lines.append(f"Tax,{format_number(entry.get('tax'))}")
+    lines.append(f"Subtotal,{format_number(entry.get('subtotal'), as_currency=False)}")
+    lines.append(f"Tax,{format_number(entry.get('tax'), as_currency=False)}")
     if entry.get("tip") is not None:
-        lines.append(f"Tip,{format_number(entry['tip'])}")
+        lines.append(f"Tip,{format_number(entry['tip'], as_currency=False)}")
         if entry.get("tip_percentage") is not None:
-            lines.append(f"Tip Percentage,{format_number(entry['tip_percentage'])}")
-    lines.append(f"Total (final),{format_number(entry.get('total'))}")
+            lines.append(f"Tip Percentage,{format_number(entry['tip_percentage'], as_currency=False)}")
+    lines.append(f"Total (final),{format_number(entry.get('total'), as_currency=False)}")
     return "\n".join(lines)
 
 # ---------- Main ----------
@@ -460,26 +463,26 @@ def main():
             st.session_state.show_history = True
             st.rerun()
 
-    # ---------- Display history with DataFrame (sticky header) ----------
+    # ---------- Display history with formatted numbers ----------
     if st.session_state.show_history and st.session_state.history:
         st.divider()
         st.subheader("📋 Scan History (Current Session)")
         st.caption("Click the '👁️' button to preview a receipt, or '🗑️' to delete. Click the table headers to sort.")
 
-        # Build summary DataFrame
+        # Build summary DataFrame with formatted numbers (as strings for display)
         summary_data = []
         for entry in st.session_state.history:
-            tip_display = f"${entry['tip']:.2f}" if entry.get("tip") is not None else "N/A"
+            tip_display = format_number(entry.get("tip"), as_currency=True)
             if entry.get("tip_percentage") is not None:
                 tip_display += f" ({entry['tip_percentage']:.0f}%)"
             summary_data.append({
                 "File": entry["filename"][:40] + "..." if len(entry["filename"]) > 40 else entry["filename"],
                 "Items": len(entry.get("items") or []),
-                "Subtotal": f"${entry['subtotal']:.2f}" if entry.get("subtotal") else "N/A",
-                "Tax": f"${entry['tax']:.2f}" if entry.get("tax") else "N/A",
+                "Subtotal": format_number(entry.get("subtotal"), as_currency=True),
+                "Tax": format_number(entry.get("tax"), as_currency=True),
                 "Tip": tip_display,
                 "Tip %": f"{entry['tip_percentage']:.1f}%" if entry.get("tip_percentage") is not None else "N/A",
-                "Total": f"${entry['total']:.2f}" if entry.get("total") else "N/A",
+                "Total": format_number(entry.get("total"), as_currency=True),
                 "Timestamp": entry["timestamp"]
             })
         summary_df = pd.DataFrame(summary_data)
@@ -507,7 +510,6 @@ def main():
         st.subheader("📄 Receipt Details")
         st.caption("Select a receipt below to preview and edit.")
 
-        # For each entry, create a button to expand the details
         for idx, entry in enumerate(st.session_state.history):
             col1, col2, col3 = st.columns([4, 1, 1])
             with col1:
@@ -525,19 +527,19 @@ def main():
                         del st.session_state.expanded_rows[idx]
                     st.rerun()
 
-            # Expander for details (toggled by preview button)
+            # Expander for details – with formatted metrics
             with st.expander(f"📄 {entry['filename']} – {entry['timestamp']}", expanded=st.session_state.expanded_rows.get(idx, False)):
                 cols_met = st.columns(5)
-                cols_met[0].metric("Subtotal", f"${entry['subtotal']:.2f}" if entry.get("subtotal") else "N/A")
-                cols_met[1].metric("Tax", f"${entry['tax']:.2f}" if entry.get("tax") else "N/A")
+                cols_met[0].metric("Subtotal", format_number(entry.get("subtotal"), as_currency=True))
+                cols_met[1].metric("Tax", format_number(entry.get("tax"), as_currency=True))
                 if entry.get("tip") is not None:
-                    tip_label = f"${entry['tip']:.2f}"
+                    tip_label = format_number(entry.get("tip"), as_currency=True)
                     if entry.get("tip_percentage") is not None:
                         tip_label += f" ({entry['tip_percentage']:.0f}%)"
                     cols_met[2].metric("💵 Tip", tip_label)
                 else:
                     cols_met[2].metric("💵 Tip", "None")
-                cols_met[3].metric("Total (final)", f"${entry['total']:.2f}" if entry.get("total") else "N/A")
+                cols_met[3].metric("Total (final)", format_number(entry.get("total"), as_currency=True))
 
                 if "image_bytes" in entry and entry["image_bytes"]:
                     default_width = st.session_state.img_width.get(idx, 900)
@@ -628,11 +630,11 @@ def main():
                 summary_data_csv.append({
                     "File": entry["filename"],
                     "Items": len(entry.get("items") or []),
-                    "Subtotal": format_number(entry.get("subtotal")),
-                    "Tax": format_number(entry.get("tax")),
-                    "Tip": format_number(entry.get("tip")),
-                    "Tip %": format_number(entry.get("tip_percentage")),
-                    "Total": format_number(entry.get("total")),
+                    "Subtotal": format_number(entry.get("subtotal"), as_currency=False),
+                    "Tax": format_number(entry.get("tax"), as_currency=False),
+                    "Tip": format_number(entry.get("tip"), as_currency=False),
+                    "Tip %": format_number(entry.get("tip_percentage"), as_currency=False),
+                    "Total": format_number(entry.get("total"), as_currency=False),
                     "Timestamp": entry["timestamp"]
                 })
             csv_summary = pd.DataFrame(summary_data_csv).to_csv(index=False).encode('utf-8')
