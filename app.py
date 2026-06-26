@@ -11,6 +11,8 @@ import fitz
 from datetime import datetime, date
 import sqlite3
 import hashlib
+import time
+import random
 
 # ---------- Load environment variables ----------
 load_dotenv()
@@ -20,19 +22,15 @@ st.set_page_config(page_title="Receipt Scanner with AI", layout="wide")
 
 # ---------- Configuration constants ----------
 MAX_SCANS_PER_DAY = 999999
-MAX_FILES_PER_SUBMISSION = 50
+MAX_FILES_PER_SUBMISSION = 30
+BASE_DELAY = 5.0          # seconds between requests (safer)
+MAX_RETRIES = 4           # number of retries on 429 error
 
 # ---------- Helper: format numbers with commas and two decimals ----------
 def format_number(value, as_currency=False):
-    """
-    Format a number with thousands separators and exactly two decimal places.
-    If as_currency is True, add a '$' prefix.
-    Returns a string.
-    """
     if value is None:
         return "N/A"
     if isinstance(value, (int, float)):
-        # Always format with two decimal places and thousands separators
         formatted = f"{value:,.2f}"
         if as_currency:
             return f"${formatted}"
@@ -197,7 +195,27 @@ def increment_scan_count(user_id):
     conn.commit()
     conn.close()
 
-# ---------- Helper: process one file ----------
+# ---------- Helper: process one file with exponential backoff ----------
+def process_single_file_with_retry(uploaded_file, user_id, retries=MAX_RETRIES):
+    """
+    Process a file with automatic retry on rate‑limit (429) errors.
+    Uses exponential backoff: 3, 6, 12, 24 seconds.
+    """
+    attempt = 0
+    while attempt <= retries:
+        try:
+            return process_single_file(uploaded_file, user_id)
+        except Exception as e:
+            if "429" in str(e) and attempt < retries:
+                wait = (2 ** (attempt + 1)) * 1.5  # 3, 6, 12, 24
+                wait += random.uniform(0, 1)       # jitter to avoid thundering herd
+                st.toast(f"Rate limit hit – retrying in {wait:.1f}s...", icon="⏳")
+                time.sleep(wait)
+                attempt += 1
+            else:
+                raise
+    raise Exception("Max retries exceeded for rate limit.")
+
 def process_single_file(uploaded_file, user_id):
     if get_scan_count_today(user_id) >= MAX_SCANS_PER_DAY:
         raise Exception(f"Daily scan limit ({MAX_SCANS_PER_DAY}) reached. Please try again tomorrow.")
@@ -438,37 +456,47 @@ def main():
             process_clicked = st.button("🚀 Process All", type="primary",
                                         disabled=(not uploaded_files))
 
-    # ---------- Process files ----------
+    # ---------- Process files with rate‑limit handling ----------
     if process_clicked and uploaded_files:
         if today_scans >= MAX_SCANS_PER_DAY:
             st.error(f"Daily scan limit ({MAX_SCANS_PER_DAY}) reached.")
         else:
             progress_bar = st.progress(0)
             status_text = st.empty()
+            error_container = st.empty()
             errors = []
             new_results = []
+            total_files = len(uploaded_files)
 
             for idx, file in enumerate(uploaded_files):
-                status_text.text(f"Processing {file.name}... ({idx+1}/{len(uploaded_files)})")
+                status_text.text(f"Processing {file.name}... ({idx+1}/{total_files})")
                 try:
-                    result = process_single_file(file, st.session_state.user_id)
+                    result = process_single_file_with_retry(file, st.session_state.user_id)
                     scan_id = save_scan(st.session_state.user_id, result)
                     result["db_id"] = scan_id
                     new_results.append(result)
                     increment_scan_count(st.session_state.user_id)
+                    # Base delay between requests (rate‑limit safety)
+                    time.sleep(BASE_DELAY)
                 except Exception as e:
-                    errors.append(f"{file.name}: {str(e)}")
-                progress_bar.progress((idx + 1) / len(uploaded_files))
+                    error_msg = f"❌ {file.name}: {str(e)}"
+                    errors.append(error_msg)
+                    # Show all errors accumulated so far
+                    with error_container.container():
+                        for err in errors:
+                            st.error(err)
+                progress_bar.progress((idx + 1) / total_files)
 
             status_text.text("✅ All files processed!")
+
             if errors:
-                st.warning("Some files had errors:")
-                for err in errors:
-                    st.write(f"- {err}")
+                st.warning("Some files had errors. See above for details.")
 
             if new_results:
                 st.session_state.history.extend(new_results)
-                st.success(f"✅ {len(new_results)} receipt(s) successfully scanned and saved.")
+                st.success(f"✅ {len(new_results)} receipt(s) scanned.")
+            else:
+                st.error("⚠️ No receipts were processed. Check the error messages above.")
 
             st.session_state.show_history = True
             st.rerun()
@@ -479,7 +507,6 @@ def main():
         st.subheader("📋 Scan History (Current Session)")
         st.caption("Click the '👁️' button to preview a receipt, or '🗑️' to delete. Click the table headers to sort.")
 
-        # Build summary DataFrame with formatted numbers (as strings for display)
         summary_data = []
         for entry in st.session_state.history:
             tip_display = format_number(entry.get("tip"), as_currency=True)
@@ -497,7 +524,6 @@ def main():
             })
         summary_df = pd.DataFrame(summary_data)
 
-        # Custom CSS for sticky header, background, font
         st.markdown("""
         <style>
         div[data-testid="stDataFrame"] th {
@@ -515,7 +541,6 @@ def main():
 
         st.dataframe(summary_df, use_container_width=True)
 
-        # Preview and delete buttons (below table)
         st.markdown("---")
         st.subheader("📄 Receipt Details")
         st.caption("Select a receipt below to preview and edit.")
@@ -537,7 +562,6 @@ def main():
                         del st.session_state.expanded_rows[idx]
                     st.rerun()
 
-            # Expander for details – with formatted metrics
             with st.expander(f"📄 {entry['filename']} – {entry['timestamp']}", expanded=st.session_state.expanded_rows.get(idx, False)):
                 cols_met = st.columns(5)
                 cols_met[0].metric("Subtotal", format_number(entry.get("subtotal"), as_currency=True))
